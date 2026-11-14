@@ -20,7 +20,7 @@
       });
     in {
       default = pkgs.cardwire;
-      nixcache-proxy = nixcache.packages.${system}.default;
+      nixcache-proxy = nixcache.packages.${system}.cache-proxy;
     });
   };
 }
