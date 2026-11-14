@@ -547,7 +547,7 @@ PYEOF
         }')
 
     oci_push_manifest "cache-index" "$manifest"
-    info "Cache index updated ($(echo "$new_entries" | jq 'length') new entries)"
+    info "Cache index updated"
 }
 
 # ── Main pipeline ─────────────────────────────────────────────────────
@@ -571,7 +571,6 @@ start_self_substituter() {
     # directly in parallel, so the proxy blocking on an upstream HTTP call
     # per miss just serializes what Nix would otherwise do concurrently.
     NIXCACHE_REPO="$NIXCACHE_REPO" \
-    NIXCACHE_PORT=37515 \
     NIXCACHE_LISTEN=127.0.0.1 \
     NIXCACHE_UPSTREAM="" \
     GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}" \
@@ -581,7 +580,7 @@ start_self_substituter() {
     # Wait for it to be ready
     local ready=false
     for i in $(seq 1 15); do
-        if curl -fs --max-time 2 http://127.0.0.1:37515/nix-cache-info >/dev/null 2>&1; then
+        if curl -fs --max-time 2 http://127.0.0.1:${NIXCACHE_PORT:-37515}/nix-cache-info >/dev/null 2>&1; then
             ready=true
             break
         fi
@@ -597,9 +596,11 @@ start_self_substituter() {
             nix_conf="${HOME}/.config/nix/nix.conf"
             mkdir -p "$(dirname "$nix_conf")"
         fi
+        local proxy_port="${NIXCACHE_PORT:-37515}"
+        local proxy_priority="${NIXCACHE_PRIORITY:-40}"
         cat >> "$nix_conf" <<EOF
-extra-substituters = http://127.0.0.1:37515
-extra-trusted-substituters = http://127.0.0.1:37515
+extra-substituters = http://127.0.0.1:${proxy_port}?priority=${proxy_priority}
+extra-trusted-substituters = http://127.0.0.1:${proxy_port}?priority=${proxy_priority}
 EOF
         info "Added self-substituter to $nix_conf"
 
