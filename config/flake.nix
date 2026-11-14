@@ -1,29 +1,26 @@
 {
-  description = "User configuration — add your packages and NixOS hosts here";
+  description = "nixcache-oci build configuration";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixcache.url = "github:PlutoniumByte/nixcache-oci";
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, nixcache }:
   let
     systems = [ "x86_64-linux" "aarch64-linux" ];
     forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
   in {
     packages = forAllSystems (system:
-    let pkgs = nixpkgs.legacyPackages.${system};
+    let
+      pkgs = nixpkgs.legacyPackages.${system}.extend (final: prev: {
+        cardwire = prev.cardwire.overrideAttrs (oldAttrs: {
+          buildInputs = (oldAttrs.buildInputs or [ ]) ++ [ final.sqlite ];
+        });
+      });
     in {
-      default = pkgs.hello;
-      htop = pkgs.htop;
-      tree = pkgs.tree;
-
-      # Custom package that won't be on cache.nixos.org
-      nixcache-test = pkgs.writeShellScriptBin "nixcache-test" ''
-        echo "Hello from nixcache-oci! Cache is working."
-        echo "Built at: 2026-04-05"
-      '';
+      default = pkgs.cardwire;
+      nixcache-proxy = nixcache.packages.${system}.default;
     });
-
-    # nixosConfigurations.my-host = nixpkgs.lib.nixosSystem { ... };
   };
 }
