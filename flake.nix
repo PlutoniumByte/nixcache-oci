@@ -84,9 +84,16 @@
           serviceConfig = {
             ExecStart = "${self.packages.${pkgs.stdenv.hostPlatform.system}.cache-proxy}/bin/nixcache-proxy";
             Restart = "on-failure";
+            RestartSec = "5s";
             DynamicUser = true;
             CacheDirectory = "nixcache-proxy";
             TimeoutStopSec = "10s";
+
+            Nice = 19;
+            CPUSchedulingPolicy = "idle";
+            IOSchedulingClass = "idle";
+            MemoryHigh = "30M";
+            MemoryMax = "100M";
           };
         };
         nix.settings = {

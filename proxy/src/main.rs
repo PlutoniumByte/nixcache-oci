@@ -31,13 +31,13 @@ struct Config {
     upstream_caches: Vec<String>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 struct CacheEntry {
     narinfo: String,
     nar_digest: String,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 struct CacheIndexData {
     entries: HashMap<String, CacheEntry>,
     public_key: Option<String>,
@@ -152,13 +152,11 @@ impl AppState {
 
         let mut f = tokio::fs::File::create(&tmp).await?;
         tokio::io::AsyncWriteExt::write_all(&mut f, &json).await?;
-        f.sync_all().await?;
         drop(f);
-
         tokio::fs::rename(&tmp, path).await
     }
 
-    async fn refresh_index(&self) {
+    async fn refresh_index(&self) -> bool {
         let token = self.get_oci_token().await;
         let manifest_url = format!("https://{}/v2/{}/nix-cache/manifests/cache-index", self.config.registry, self.config.repo);
 
@@ -167,38 +165,54 @@ impl AppState {
             req = req.header("Authorization", format!("Bearer {}", token));
         }
 
-        if let Ok(resp) = req.send().await {
-            if let Ok(manifest) = resp.json::<serde_json::Value>().await {
-                if let Some(layers) = manifest.get("layers").and_then(|l| l.as_array()) {
-                    if let Some(digest) = layers.get(0).and_then(|l| l.get("digest")).and_then(|d| d.as_str()) {
-                        let blob_url = format!("https://{}/v2/{}/nix-cache/blobs/{}", self.config.registry, self.config.repo, digest);
-                        let mut blob_req = self.client.get(&blob_url);
-                        if !token.is_empty() {
-                            blob_req = blob_req.header("Authorization", format!("Bearer {}", token));
-                        }
+        let Ok(resp) = req.send().await else {
+            error!("Failed to send manifest request");
+            return false;
+        };
+        let Ok(manifest) = resp.json::<serde_json::Value>().await else {
+            error!("Failed to parse manifest JSON");
+            return false;
+        };
 
-                        if let Ok(blob_resp) = blob_req.send().await {
-                            if let Ok(data) = blob_resp.json::<CacheIndexData>().await {
-                                let count = data.entries.len();
-                                let data_arc = Arc::new(data);
+        let Some(digest) = manifest.get("layers").and_then(|l| l.as_array()).and_then(|a| a.first()).and_then(|l| l.get("digest")).and_then(|d| d.as_str()) else {
+            error!("Manifest has no layer digest");
+            return false;
+        };
 
-                                // Update RAM first so the running proxy serves fresh data immediately
-                                *self.index.write().await = data_arc.clone();
-
-                                // Persist to disk (best-effort)
-                                if let Err(e) = self.save_index_to_disk(&data_arc).await {
-                                    error!("Failed to save index to disk: {}", e);
-                                }
-
-                                info!("Index refreshed: {} entries", count);
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
+        let blob_url = format!("https://{}/v2/{}/nix-cache/blobs/{}", self.config.registry, self.config.repo, digest);
+        let mut blob_req = self.client.get(&blob_url);
+        if !token.is_empty() {
+            blob_req = blob_req.header("Authorization", format!("Bearer {}", token));
         }
-        error!("Failed to refresh index from GHCR");
+
+        let Ok(blob_resp) = blob_req.send().await else {
+            error!("Failed to fetch blob");
+            return false;
+        };
+        let Ok(data) = blob_resp.json::<CacheIndexData>().await else {
+            error!("Failed to parse blob JSON");
+            return false;
+        };
+
+        let data_arc = Arc::new(data);
+
+        let is_unchanged = {
+            let current = self.index.read().await;
+            **current == *data_arc
+        };
+
+        if is_unchanged {
+            info!("Index unchanged ({} entries)", data_arc.entries.len());
+            return true;
+        }
+
+        if let Err(e) = self.save_index_to_disk(&data_arc).await {
+            error!("Failed to save index to disk: {}", e);
+        }
+
+        *self.index.write().await = data_arc;
+        info!("Index refreshed and saved: {} entries", self.index.read().await.entries.len());
+        true
     }
 }
 
@@ -228,9 +242,9 @@ async fn handle_status(axum::extract::State(state): axum::extract::State<Arc<App
 }
 
 async fn handle_refresh(axum::extract::State(state): axum::extract::State<Arc<AppState>>) -> impl IntoResponse {
-    state.refresh_index().await;
+    let success = state.refresh_index().await;
     let index = state.index.read().await.clone();
-    axum::Json(serde_json::json!({"refreshed": true, "entries": index.entries.len()}))
+    axum::Json(serde_json::json!({"refreshed": success, "entries": index.entries.len()}))
 }
 
 async fn handle_narinfo(
@@ -307,6 +321,21 @@ async fn handle_nar(
     StatusCode::NOT_FOUND.into_response()
 }
 
+fn is_on_battery() -> bool {
+    let Ok(entries) = std::fs::read_dir("/sys/class/power_supply") else { return false };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("AC") || name.starts_with("ADP") || name == "ACAD" {
+            let online = entry.path().join("online");
+            if let Ok(v) = std::fs::read_to_string(&online) {
+                return v.trim() == "0";
+            }
+        }
+    }
+    false
+}
+
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
@@ -320,7 +349,7 @@ async fn main() {
         port: env::var("NIXCACHE_PORT").unwrap_or_else(|_| "37515".to_string()).parse().unwrap(),
         listen_addr: env::var("NIXCACHE_LISTEN").unwrap_or_else(|_| "127.0.0.1".to_string()),
         github_token: env::var("GITHUB_TOKEN").unwrap_or_else(|_| env::var("GH_TOKEN").unwrap_or_default()),
-        index_ttl: env::var("NIXCACHE_INDEX_TTL").unwrap_or_else(|_| "300".to_string()).parse().unwrap(),
+        index_ttl: env::var("NIXCACHE_INDEX_TTL").unwrap_or_else(|_| "3600".to_string()).parse().unwrap(),
         index_file,
         upstream_caches: env::var("NIXCACHE_UPSTREAM").unwrap_or_else(|_| "https://cache.nixos.org".to_string()).split_whitespace().map(String::from).collect(),
     };
@@ -338,9 +367,26 @@ async fn main() {
 
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
+        let mut backoff = state_clone.config.index_ttl;
+
         loop {
-            state_clone.refresh_index().await;
-            tokio::time::sleep(Duration::from_secs(state_clone.config.index_ttl)).await;
+            let success = state_clone.refresh_index().await;
+
+            let base_ttl = if is_on_battery() {
+                state_clone.config.index_ttl * 4
+            } else {
+                state_clone.config.index_ttl
+            };
+
+            let sleep_secs = if success {
+                backoff = base_ttl;
+                base_ttl
+            } else {
+                backoff = std::cmp::min(backoff * 2, 3600);
+                error!("Refresh failed. Backing off for {} seconds", backoff);
+                backoff
+            };
+            tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
         }
     });
 
