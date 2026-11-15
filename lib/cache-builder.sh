@@ -431,6 +431,8 @@ update_cache_index() {
     local public_key=""
     if [[ -n "$NIXCACHE_SIGNING_KEY_FILE" ]] && [[ -f "${NIXCACHE_SIGNING_KEY_FILE}.pub" ]]; then
         public_key=$(cat "${NIXCACHE_SIGNING_KEY_FILE}.pub")
+    elif [[ -f "public-key.txt" ]]; then
+        public_key=$(cat "public-key.txt")
     fi
 
     # Build the merged index in one Python run, reading large inputs from
@@ -547,7 +549,7 @@ PYEOF
         }')
 
     oci_push_manifest "cache-index" "$manifest"
-    info "Cache index updated ($(echo "$new_entries" | jq 'length') new entries)"
+    info "Cache index updated"
 }
 
 # ── Main pipeline ─────────────────────────────────────────────────────
@@ -559,23 +561,20 @@ start_self_substituter() {
     info "Starting self-substituter to reuse previously cached builds"
 
     # The proxy script is at proxy/main.py relative to the repo root
-    local proxy_script
-    proxy_script="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/proxy/main.py"
-    if [[ ! -f "$proxy_script" ]]; then
-        info "Proxy script not found at $proxy_script, skipping self-substitution"
+    info "Building Rust proxy..."
+    local proxy_bin
+    proxy_bin=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && nix build .#cache-proxy --no-link --print-out-paths 2>/dev/null)/bin/nixcache-proxy
+    if [[ ! -x "$proxy_bin" ]]; then
+        info "Failed to build Rust proxy, skipping self-substitution"
         return 0
     fi
 
-    # NIXCACHE_UPSTREAM="" — skip proxy's internal upstream fallback. Nix
-    # already queries cache.nixos.org and the flake's other substituters
-    # directly in parallel, so the proxy blocking on an upstream HTTP call
-    # per miss just serializes what Nix would otherwise do concurrently.
     NIXCACHE_REPO="$NIXCACHE_REPO" \
-    NIXCACHE_PORT=37515 \
     NIXCACHE_LISTEN=127.0.0.1 \
     NIXCACHE_UPSTREAM="" \
+    NIXCACHE_INDEX_DIR="/tmp/nixcache-proxy" \
     GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}" \
-        python3 "$proxy_script" &
+        "$proxy_bin" &
     SELF_PROXY_PID=$!
 
     # Wait for it to be ready

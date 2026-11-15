@@ -15,22 +15,18 @@
     systems = [ "x86_64-linux" "aarch64-linux" ];
     forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system);
   in {
-
     packages = forAllSystems (system:
     let pkgs = nixpkgs.legacyPackages.${system};
     in {
-      cache-proxy = pkgs.stdenv.mkDerivation {
+      cache-proxy = pkgs.rustPlatform.buildRustPackage {
         pname = "nixcache-proxy";
         version = "0.1.0";
         src = ./proxy;
-        nativeBuildInputs = [ pkgs.python3 ];
-        installPhase = ''
-          mkdir -p $out/bin
-          cp main.py $out/bin/nixcache-proxy
-          chmod +x $out/bin/nixcache-proxy
-          patchShebangs $out/bin/nixcache-proxy
-        '';
+        cargoLock.lockFile = ./proxy/Cargo.lock;
+        nativeBuildInputs = [ pkgs.pkg-config ];
+        buildInputs = [ pkgs.openssl ];
       };
+      default = self.packages.${system}.cache-proxy;
     });
 
     apps = forAllSystems (system: {
@@ -38,6 +34,7 @@
         type = "app";
         program = "${self.packages.${system}.cache-proxy}/bin/nixcache-proxy";
       };
+      default = self.apps.${system}.cache-proxy;
     });
 
     nixosModules.default = { config, pkgs, lib, ... }:
@@ -58,32 +55,17 @@
         listenAddress = lib.mkOption {
           type = lib.types.str;
           default = "127.0.0.1";
-          example = "0.0.0.0";
-          description = ''
-            Address the proxy binds to.
-            Use "127.0.0.1" for local-only access (default).
-            Use "0.0.0.0" to serve the cache to other machines on your network.
-          '';
+          description = "Address the proxy binds to.";
         };
         publicKey = lib.mkOption {
           type = lib.types.str;
           default = "";
-          example = "my-cache-1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
-          description = ''
-            Public key for verifying cache signatures.
-            Generate with: nix-store --generate-binary-cache-key my-cache-1 secret.key public.key
-            The proxy also exposes the key at http://localhost:PORT/public-key
-            Leave empty and set requireSignatures = false to use without signing.
-          '';
+          description = "Public key for verifying cache signatures.";
         };
         requireSignatures = lib.mkOption {
           type = lib.types.bool;
           default = true;
-          description = ''
-            Whether to require valid signatures from this cache.
-            Set to false if you haven't configured a signing key.
-            When true, you must also set publicKey.
-          '';
+          description = "Whether to require valid signatures from this cache.";
         };
       };
 
@@ -97,10 +79,6 @@
             NIXCACHE_REPO = cfg.repo;
             NIXCACHE_PORT = toString cfg.port;
             NIXCACHE_LISTEN = cfg.listenAddress;
-            # DynamicUser has no writable $HOME, so the proxy's default
-            # Path.home()/.cache path resolves to /.cache on a read-only
-            # root fs. Every request thread crashes mkdir'ing there. Point
-            # at systemd's CacheDirectory = "nixcache-proxy" instead.
             NIXCACHE_INDEX_DIR = "/var/cache/nixcache-proxy";
           };
           serviceConfig = {
@@ -108,8 +86,6 @@
             Restart = "on-failure";
             DynamicUser = true;
             CacheDirectory = "nixcache-proxy";
-            # Belt-and-suspenders: if the proxy ever stalls during
-            # shutdown, don't make rebuilds wait 90s for SIGKILL.
             TimeoutStopSec = "10s";
           };
         };
@@ -118,6 +94,8 @@
           extra-trusted-substituters = [ "http://localhost:${toString cfg.port}" ];
           extra-trusted-public-keys = lib.mkIf (cfg.publicKey != "") [ cfg.publicKey ];
           require-sigs = lib.mkIf (!cfg.requireSignatures) false;
+          connect-timeout = 2;
+          fallback = true;
         };
       };
     };
