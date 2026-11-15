@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     env,
+    path::PathBuf,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -26,6 +27,7 @@ struct Config {
     listen_addr: String,
     github_token: String,
     index_ttl: u64,
+    index_file: PathBuf,
     upstream_caches: Vec<String>,
 }
 
@@ -95,7 +97,7 @@ impl AppState {
                 }
             }
         }
-        
+
         if token.is_empty() {
             token = self.config.github_token.clone();
         }
@@ -104,10 +106,62 @@ impl AppState {
         token
     }
 
+    async fn cleanup_leftovers(&self) {
+        let Some(dir) = self.config.index_file.parent() else { return };
+        let Ok(mut entries) = tokio::fs::read_dir(dir).await else { return };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("cache-index.json.tmp") {
+                if tokio::fs::remove_file(entry.path()).await.is_ok() {
+                    info!("Removed leftover: {}", name);
+                }
+            }
+        }
+    }
+
+    async fn load_index_from_disk(&self) {
+        let path = &self.config.index_file;
+        let data = match tokio::fs::read(path).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                error!("Failed to read {}: {}", path.display(), e);
+                return;
+            }
+        };
+
+        match serde_json::from_slice::<CacheIndexData>(&data) {
+            Ok(parsed) => {
+                let count = parsed.entries.len();
+                *self.index.write().await = Arc::new(parsed);
+                info!("Loaded {} entries from disk ({})", count, path.display());
+            }
+            Err(e) => {
+                error!("Disk cache corrupt ({}), removing it", e);
+                let _ = tokio::fs::remove_file(path).await;
+            }
+        }
+    }
+
+    async fn save_index_to_disk(&self, data: &CacheIndexData) -> std::io::Result<()> {
+        let path = &self.config.index_file;
+        let tmp = path.with_extension(format!("json.tmp.{}", std::process::id()));
+
+        let json = serde_json::to_vec(data)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        let mut f = tokio::fs::File::create(&tmp).await?;
+        tokio::io::AsyncWriteExt::write_all(&mut f, &json).await?;
+        f.sync_all().await?;
+        drop(f);
+
+        tokio::fs::rename(&tmp, path).await
+    }
+
     async fn refresh_index(&self) {
         let token = self.get_oci_token().await;
         let manifest_url = format!("https://{}/v2/{}/nix-cache/manifests/cache-index", self.config.registry, self.config.repo);
-        
+
         let mut req = self.client.get(&manifest_url).header("Accept", "application/vnd.oci.image.manifest.v1+json");
         if !token.is_empty() {
             req = req.header("Authorization", format!("Bearer {}", token));
@@ -125,9 +179,18 @@ impl AppState {
 
                         if let Ok(blob_resp) = blob_req.send().await {
                             if let Ok(data) = blob_resp.json::<CacheIndexData>().await {
-                                let mut index = self.index.write().await;
-                                *index = Arc::new(data);
-                                info!("Index refreshed: {} entries", index.entries.len());
+                                let count = data.entries.len();
+                                let data_arc = Arc::new(data);
+
+                                // Update RAM first so the running proxy serves fresh data immediately
+                                *self.index.write().await = data_arc.clone();
+
+                                // Persist to disk (best-effort)
+                                if let Err(e) = self.save_index_to_disk(&data_arc).await {
+                                    error!("Failed to save index to disk: {}", e);
+                                }
+
+                                info!("Index refreshed: {} entries", count);
                                 return;
                             }
                         }
@@ -158,6 +221,7 @@ async fn handle_status(axum::extract::State(state): axum::extract::State<Arc<App
         "index_entries": index.entries.len(),
         "index_ttl": state.config.index_ttl,
         "repo": state.config.repo,
+        "index_file": state.config.index_file.display().to_string(),
         "upstream": state.config.upstream_caches,
     });
     axum::Json(status)
@@ -201,7 +265,7 @@ async fn handle_nar(
     let index = state.index.read().await.clone();
 
     let store_hash = nar_basename.trim_end_matches(".nar.xz").trim_end_matches(".nar");
-    
+
     let mut digest = None;
     if let Some(entry) = index.entries.get(store_hash) {
         digest = Some(entry.nar_digest.clone());
@@ -247,6 +311,9 @@ async fn handle_nar(
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    let index_dir = env::var("NIXCACHE_INDEX_DIR").unwrap_or_else(|_| "/var/cache/nixcache-proxy".to_string());
+    let index_file = PathBuf::from(&index_dir).join("cache-index.json");
+
     let config = Config {
         repo: env::var("NIXCACHE_REPO").unwrap_or_else(|_| "cmspam/mynixcache-oci".to_string()),
         registry: env::var("NIXCACHE_REGISTRY").unwrap_or_else(|_| "ghcr.io".to_string()),
@@ -254,11 +321,21 @@ async fn main() {
         listen_addr: env::var("NIXCACHE_LISTEN").unwrap_or_else(|_| "127.0.0.1".to_string()),
         github_token: env::var("GITHUB_TOKEN").unwrap_or_else(|_| env::var("GH_TOKEN").unwrap_or_default()),
         index_ttl: env::var("NIXCACHE_INDEX_TTL").unwrap_or_else(|_| "300".to_string()).parse().unwrap(),
+        index_file,
         upstream_caches: env::var("NIXCACHE_UPSTREAM").unwrap_or_else(|_| "https://cache.nixos.org".to_string()).split_whitespace().map(String::from).collect(),
     };
 
+    if let Some(parent) = config.index_file.parent() {
+        if let Err(e) = tokio::fs::create_dir_all(parent).await {
+            error!("Failed to create {}: {}", parent.display(), e);
+        }
+    }
+
     let state = AppState::new(config.clone());
-    
+
+    state.cleanup_leftovers().await;
+    state.load_index_from_disk().await;
+
     let state_clone = Arc::clone(&state);
     tokio::spawn(async move {
         loop {
@@ -278,7 +355,8 @@ async fn main() {
 
     let addr = format!("{}:{}", config.listen_addr, config.port);
     info!("nixcache-proxy starting on http://{}", addr);
-    
+    info!("Index file: {}", config.index_file.display());
+
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
