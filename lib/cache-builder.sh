@@ -431,6 +431,8 @@ update_cache_index() {
     local public_key=""
     if [[ -n "$NIXCACHE_SIGNING_KEY_FILE" ]] && [[ -f "${NIXCACHE_SIGNING_KEY_FILE}.pub" ]]; then
         public_key=$(cat "${NIXCACHE_SIGNING_KEY_FILE}.pub")
+    elif [[ -f "public-key.txt" ]]; then
+        public_key=$(cat "public-key.txt")
     fi
 
     # Build the merged index in one Python run, reading large inputs from
@@ -547,7 +549,7 @@ PYEOF
         }')
 
     oci_push_manifest "cache-index" "$manifest"
-    info "Cache index updated ($(echo "$new_entries" | jq 'length') new entries)"
+    info "Cache index updated"
 }
 
 # ── Main pipeline ─────────────────────────────────────────────────────
