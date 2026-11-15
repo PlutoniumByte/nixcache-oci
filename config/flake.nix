@@ -16,6 +16,7 @@
       pkgs = nixpkgs.legacyPackages.${system}.extend (final: prev: {
         cardwire = prev.cardwire.overrideAttrs (oldAttrs: {
           buildInputs = (oldAttrs.buildInputs or [ ]) ++ [ final.sqlite ];
+          LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
         });
       });
     in {
