@@ -92,6 +92,8 @@
           extra-trusted-substituters = [ "http://localhost:${toString cfg.port}" ];
           extra-trusted-public-keys = lib.mkIf (cfg.publicKey != "") [ cfg.publicKey ];
           require-sigs = lib.mkIf (!cfg.requireSignatures) false;
+          connect-timeout = 2;
+          fallback = true;
         };
       };
     };
