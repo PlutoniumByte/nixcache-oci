@@ -79,11 +79,13 @@
             NIXCACHE_REPO = cfg.repo;
             NIXCACHE_PORT = toString cfg.port;
             NIXCACHE_LISTEN = cfg.listenAddress;
+            NIXCACHE_INDEX_DIR = "/var/cache/nixcache-proxy";
           };
           serviceConfig = {
             ExecStart = "${self.packages.${pkgs.stdenv.hostPlatform.system}.cache-proxy}/bin/nixcache-proxy";
             Restart = "on-failure";
             DynamicUser = true;
+            CacheDirectory = "nixcache-proxy";
             TimeoutStopSec = "10s";
           };
         };

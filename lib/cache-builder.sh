@@ -572,6 +572,7 @@ start_self_substituter() {
     NIXCACHE_REPO="$NIXCACHE_REPO" \
     NIXCACHE_LISTEN=127.0.0.1 \
     NIXCACHE_UPSTREAM="" \
+    NIXCACHE_INDEX_DIR="/tmp/nixcache-proxy" \
     GITHUB_TOKEN="${GITHUB_TOKEN:-${GH_TOKEN:-}}" \
         "$proxy_bin" &
     SELF_PROXY_PID=$!
