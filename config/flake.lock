@@ -5,11 +5,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1795042355,
-        "narHash": "sha256-v5tLxqKib/L3+ugu8Qr1aBo/6PvJv8f5wmIUHLoHR3Y=",
+        "lastModified": 1795091806,
+        "narHash": "sha256-mBFKDIkogROs5HAT0icQ4qb++JfgKT358qUGAZe482w=",
         "owner": "PlutoniumByte",
         "repo": "nixcache-oci",
-        "rev": "ef271fd177d45f0f92b4caa589996e4f03c96818",
+        "rev": "e15b753d45a0bd5638b9122a8213f03a2ee343c0",
         "type": "github"
       },
       "original": {
