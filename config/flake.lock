@@ -5,11 +5,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1795786477,
-        "narHash": "sha256-kJMqLhzYTkaTruzKokMwyWQU63sI86V5Y+bcnqBQJKA=",
+        "lastModified": 1795823789,
+        "narHash": "sha256-0Gwet/dquiaXuiQ51+f3qEwb5OAoBUZM+H+a1MdKqNI=",
         "owner": "PlutoniumByte",
         "repo": "nixcache-oci",
-        "rev": "a2a330fd7eecb9c71de692d415baa92dc9fe3ef1",
+        "rev": "b5c633f941e11169fcfc1d98ff54f21184eb2f23",
         "type": "github"
       },
       "original": {
@@ -36,11 +36,11 @@
     },
     "nixpkgs_2": {
       "locked": {
-        "lastModified": 1795234589,
-        "narHash": "sha256-f/VVvxf5RsQgWVhUtefoca5ktVg0DA2bnkMOcmSnozo=",
+        "lastModified": 1795546490,
+        "narHash": "sha256-fD1nLSQM8tFob51/thCOr49JIAIjoqybAY27/+hwZQI=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "2786a2a72088ecf32aea5b3ec52099e6a7cff78f",
+        "rev": "58d0d3e9d527ca7263be6a45d1f86eacdc700dab",
         "type": "github"
       },
       "original": {
